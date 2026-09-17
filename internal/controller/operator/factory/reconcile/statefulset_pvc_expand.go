@@ -19,6 +19,7 @@ import (
 
 	vmv1beta1 "github.com/VictoriaMetrics/operator/api/operator/v1beta1"
 	"github.com/VictoriaMetrics/operator/internal/config"
+	"github.com/VictoriaMetrics/operator/internal/controller/operator/factory/k8stools"
 	"github.com/VictoriaMetrics/operator/internal/controller/operator/factory/logger"
 )
 
@@ -154,7 +155,11 @@ func modifyPVC(ctx context.Context, rclient client.Client, existingObj, newObj, 
 		prevMeta = &prevObj.ObjectMeta
 	}
 	direction := newSize.Cmp(*existingSize)
-	vacChanged := !ptr.Equal(existingObj.Spec.VolumeAttributesClassName, newObj.Spec.VolumeAttributesClassName)
+	// k8s treats nil and an empty volumeAttributesClassName as the same "no class applied" value,
+	// compare them by value in order to not issue an update for a change that has no effect.
+	existingVAC := ptr.Deref(existingObj.Spec.VolumeAttributesClassName, "")
+	newVAC := ptr.Deref(newObj.Spec.VolumeAttributesClassName, "")
+	vacChanged := existingVAC != newVAC
 	metaChanged, err := mergeMeta(existingObj, newObj, prevMeta, owner, true)
 	if err != nil {
 		return false, err
@@ -166,11 +171,9 @@ func modifyPVC(ctx context.Context, rclient client.Client, existingObj, newObj, 
 	}
 	l := logger.WithContext(ctx)
 	if vacChanged {
-		// k8s permits reset only after CSI marks volume attribute change infeasible.
-		if existingObj.Status.CurrentVolumeAttributesClassName != nil &&
-			newObj.Spec.VolumeAttributesClassName == nil &&
-			(existingObj.Status.ModifyVolumeStatus == nil || existingObj.Status.ModifyVolumeStatus.Status != corev1.PersistentVolumeClaimModifyVolumeInfeasible) {
-			err := fmt.Errorf("cannot remove volumeAttributesClassName from PVC=%s, it's immutable once set", newObj.Name)
+		if newVAC == "" && isVolumeAttributesClassApplied(existingObj) {
+			err := fmt.Errorf("cannot remove volumeAttributesClassName=%s from PVC=%s, k8s forbids clearing it"+
+				" once the class was applied to the volume, set a different volumeAttributesClassName instead", existingVAC, newObj.Name)
 			l.Error(err, "declined volumeAttributesClassName removal")
 			return false, err
 		}
@@ -219,6 +222,18 @@ func modifyPVC(ctx context.Context, rclient client.Client, existingObj, newObj, 
 	return true, nil
 }
 
+// isVolumeAttributesClassApplied checks if k8s forbids clearing volumeAttributesClassName at the given PVC.
+//
+// The API server keys this check on status.currentVolumeAttributesClassName since 1.34
+// and on spec.volumeAttributesClassName before that, see
+// https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/validation/validation.go
+func isVolumeAttributesClassApplied(pvc *corev1.PersistentVolumeClaim) bool {
+	if k8stools.IsVolumeAttributesClassRemovalStatusScoped() {
+		return pvc.Status.CurrentVolumeAttributesClassName != nil
+	}
+	return pvc.Spec.VolumeAttributesClassName != nil
+}
+
 func updatePVC(ctx context.Context, rclient client.Client, existingObj, newObj, prevObj *corev1.PersistentVolumeClaim, owner *metav1.OwnerReference) error {
 	modified, err := modifyPVC(ctx, rclient, existingObj, newObj, prevObj, owner)
 	if err != nil {
@@ -228,7 +243,7 @@ func updatePVC(ctx context.Context, rclient client.Client, existingObj, newObj, 
 		return nil
 	}
 	if err := rclient.Update(ctx, existingObj); err != nil {
-		return fmt.Errorf("failed to expand size for pvc %s: %v", newObj.Name, err)
+		return fmt.Errorf("failed to update PVC=%s: %w", newObj.Name, err)
 	}
 	return nil
 }
