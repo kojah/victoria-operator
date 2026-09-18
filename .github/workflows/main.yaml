@@ -64,6 +64,7 @@ jobs:
       - name: Lint, Test and Build
         if: github.event.pull_request.draft == false
         run: |
+          go run github.com/kojah/gohawk@v0.3.3 -json ./...
           make lint
           make manifests
           make api-gen
