@@ -30,6 +30,7 @@ func newFileWatcher(file string) (*fileWatcher, error) {
 		return nil, err
 	}
 	if err := w.Add(filepath.Dir(file)); err != nil {
+		_ = w.Close()
 		return nil, err
 	}
 	return &fileWatcher{
@@ -111,6 +112,7 @@ func (fw *fileWatcher) start(ctx context.Context, updates chan struct{}) {
 
 func (fw *fileWatcher) close() {
 	fw.wg.Wait()
+	_ = fw.w.Close()
 }
 
 func readFileContent(src string) ([]byte, error) {
@@ -195,6 +197,7 @@ func newDirWatchers(dirs []string, targetDirs []string) (*dirWatcher, error) {
 	for i, dir := range dirs {
 		logger.Infof("starting watcher for dir: %s", dir)
 		if err := w.Add(dir); err != nil {
+			_ = w.Close()
 			return nil, fmt.Errorf("cannot add dir: %s to watcher: %w", dir, err)
 		}
 		var target string
@@ -341,6 +344,7 @@ func (dw *dirWatcher) start(ctx context.Context, updates chan struct{}) {
 
 func (dw *dirWatcher) close() {
 	dw.wg.Wait()
+	_ = dw.w.Close()
 }
 
 var firstGzipBytes = []byte{0x1f, 0x8b, 0x08}
